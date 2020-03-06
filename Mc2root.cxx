@@ -1,4 +1,4 @@
-// g++ -o ProcessDT5780 ProcessDT5780.cxx `root-config --cflags --libs`
+// g++ -o Mc2root Mc2root.cxx `root-config --cflags --libs`
 #include <iostream>
 #include <iomanip>
 #include <fstream>
