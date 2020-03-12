@@ -30,47 +30,20 @@ int main(int argc, char** argv)
 	TTree* tree = new TTree("dt5780","data from dt5780");
 
 	// create and add leafs
-	uint32_t boardAggregateSize;
-	tree->Branch("boardAggregateSize", &boardAggregateSize);
-	uint8_t boardId;
-	tree->Branch("boardId", &boardId);
-	uint8_t channelMask;
-	tree->Branch("channelMask", &channelMask);
-	uint32_t boardAggregateCounter;
-	tree->Branch("boardAggregateCounter", &boardAggregateCounter);
-	uint32_t boardTimestamp;
-	tree->Branch("boardTimestamp", &boardTimestamp);
-	uint32_t aggregateSize;
-	tree->Branch("aggregateSize", &aggregateSize);
-	bool dualTraceEnabled;
-	tree->Branch("dualTraceEnabled", &dualTraceEnabled);
-	bool waveformEnabled;
-	tree->Branch("waveformEnabled", &waveformEnabled);
-	bool energyEnabled;
-	tree->Branch("energyEnabled", &energyEnabled);
-	bool timeEnabled;
-	tree->Branch("timeEnabled", &timeEnabled);
-	uint8_t analogProbe1;
-	tree->Branch("analogProbe1", &analogProbe1);
-	uint8_t analogProbe2;
-	tree->Branch("analogProbe2", &analogProbe2);
-	uint8_t digitalProbe;
-	tree->Branch("digitalProbe", &digitalProbe);
-	int numSamples;
-	int timestampRollover = 0;
-	tree->Branch("timestampRollover", &timestampRollover);
+	uint8_t protocolVersion;
+	tree->Branch("protocolVersion", &protocolVersion);
+	uint8_t numHeaderWords;
+	tree->Branch("numHeaderWords", &numHeaderWords);
+	std::vector<uint8_t> dataType;
+	tree->Branch("dataType", &dataType);
+	std::vector<uint32_t> dataFormat;
+	tree->Branch("dataFormat", &dataFormat);
 	ULong64_t timestamp;
 	tree->Branch("timestamp", &timestamp);
-	std::vector<uint16_t> waveform;
-	tree->Branch("waveform", &waveform);
-	uint8_t extras;
+	ULong64_t extras;
 	tree->Branch("extras", &extras);
-	bool pileUp;
-	tree->Branch("pileUp", &pileUp);
-	uint16_t energy;
+	ULong64_t energy;
 	tree->Branch("energy", &energy);
-	int channel;
-	tree->Branch("channel", &channel);
 
 	// open input file
 	std::ifstream input(argv[1], std::ios::binary);
@@ -87,83 +60,132 @@ int main(int argc, char** argv)
 	// loop over buffer
 	size_t pos;
 	size_t entry = 0;
+	uint64_t data = 0;
+	uint32_t mask = 0;
+	int byte = 0;
 	for(pos = 0; pos < buffer.size();) {
-		// board header
-		if(((buffer[pos]>>28)&0xf) != 0xa) {
-			std::cout<<pos<<": Error, expecting board header starting with 0xa, not 0x"<<std::dec<<buffer[pos]<<std::dec<<std::endl;
+		// header
+		if(debug) std::cout<<pos<<": header - 0x"<<std::hex<<buffer[pos]<<std::dec<<std::endl;
+		protocolVersion = buffer[pos]&0xff;
+		numHeaderWords = (buffer[pos]>>8)&0xff; // no increment needed here!
+		if(debug) std::cout<<"=> protocol "<<static_cast<int>(protocolVersion)<<" - "<<static_cast<int>(numHeaderWords)<<" words in header"<<std::endl;
+		if(numHeaderWords == 0) {
+			std::cout<<"something went wrong, I got zero header words?"<<std::endl;
 			++pos;
 			continue;
 		}
-		if(debug) std::cout<<pos<<": board header - 0x"<<std::hex<<buffer[pos]<<std::dec<<std::endl;
-		boardAggregateSize = buffer[pos++]&0xfffffff;
-		if(debug) std::cout<<"=> "<<boardAggregateSize<<" words in aggregate"<<std::endl;
-		// second board header word
-		if(debug) std::cout<<pos<<": 2nd board header - 0x"<<std::hex<<buffer[pos]<<std::dec<<std::endl;
-		boardId = (buffer[pos]>>27)&0x1f;
-		if(((buffer[pos]>>26)&0x1) == 0x1) {
-			std::cout<<pos<<": board fail 0x"<<std::dec<<buffer[pos]<<std::dec<<std::endl;
+		// read remaining header words with data type and format
+		dataType.clear();
+		dataFormat.clear();
+		for(int h = 1; h < numHeaderWords; ++h) {
+			if(debug) std::cout<<pos+h<<": header word "<<h<<" - 0x"<<std::hex<<buffer[pos+h]<<std::dec<<std::endl;
+			dataType.push_back(buffer[pos+h]&0xff);
+			dataFormat.push_back((buffer[pos+h]>>8)&0xffffff);
 		}
-		channelMask = buffer[pos++]&0xff;
-		// third board header word - board aggregate counter
-		if(debug) std::cout<<pos<<": board counter - 0x"<<std::hex<<buffer[pos]<<std::dec<<std::endl;
-		boardAggregateCounter = buffer[pos++]&0x7fffff;
-		// fourth board header word - board timestamp
-		if(debug) std::cout<<pos<<": board timestamp - 0x"<<std::hex<<buffer[pos]<<std::dec<<std::endl;
-		boardTimestamp = buffer[pos++];
-		// read each channel that is in the channel mask
-		for(channel = 0; channel < 8; ++channel) {
-			if(((channelMask>>channel)&0x1) == 0x0) continue;
-			// channel header - 31 = format word following, [20:0] = aggregate size
-			if(debug) std::cout<<pos<<": header - 0x"<<std::hex<<buffer[pos]<<std::dec<<std::endl;
-			aggregateSize = buffer[pos] & 0x1fffff;
-			if(debug) std::cout<<"=> "<<aggregateSize<<" words in channel"<<std::endl;
-			if(((buffer[pos++]>>31)&0x1) == 0x1) {
-				// format word - 31 = dual trace, 30 = waveform, 29 = energy, 28 = time, [23:22] = analog 1, [21:20] = analog 2, [19:16] = digital, [15:0] = numSamples/2
-				if(debug) std::cout<<pos<<": format - 0x"<<std::hex<<buffer[pos]<<std::dec<<std::endl;
-				dualTraceEnabled = (((buffer[pos]>>31)&0x1) == 0x1);
-				waveformEnabled =  (((buffer[pos]>>30)&0x1) == 0x1);
-				energyEnabled =    (((buffer[pos]>>29)&0x1) == 0x1);
-				timeEnabled =      (((buffer[pos]>>28)&0x1) == 0x1);
-				analogProbe1 =     (buffer[pos]>>22)&0x3;
-				analogProbe2 =     (buffer[pos]>>20)&0x3;
-				digitalProbe =     (buffer[pos]>>16)&0x3;
-				numSamples =       buffer[pos]&0xffff;
+		// advance pos past the header
+		pos += numHeaderWords;
+		// loop over all data types and formats and read them
+		for(size_t i = 0; i < dataType.size(); ++i) {
+			switch(dataFormat[i]) {
+				case 0:
+				case 1:
+					// read single byte
+					data = (buffer[pos]>>(8*byte))&0xff;
+					if(debug) std::cout<<pos<<": single byte "<<byte<<" from 0x"<<std::hex<<buffer[pos]<<" = 0x"<<data<<std::dec<<std::endl;
+					byte += 1;
+					break;
+				case 2:
+				case 3:
+					// read two bytes
+					if(byte < 3) {
+						// can read both bytes from this word
+						data = (buffer[pos]>>(8*byte))&0xffff;
+						if(debug) std::cout<<pos<<": two bytes "<<byte<<" from 0x"<<std::hex<<buffer[pos]<<" = 0x"<<data<<std::dec<<std::endl;
+						byte += 2;
+					} else {
+						// read one byte from this word
+						data = (buffer[pos++]>>(8*byte))&0xff;
+						// go to next word and read one more byte
+						data |= (buffer[pos]<<8)&0xff00;
+						if(debug) std::cout<<pos<<": two bytes "<<byte<<" from 0x"<<std::hex<<buffer[pos-1]<<" and 0x"<<buffer[pos]<<" = 0x"<<data<<std::dec<<std::endl;
+						byte = 1;
+					}
+					break;
+				case 4:
+				case 5:
+					// read four bytes
+					// use the 4-n bytes from this word and n bytes from the next word (also works for n = 0!)
+					for(int n = 4-byte, mask = 0x00; n > 0; --n) {
+						mask = mask<<8;
+						mask |= 0xff;
+					}
+					data = (buffer[pos++]>>(8*byte))&mask;
+					if(debug) std::cout<<pos-1<<": "<<4-byte<<" bytes from 0x"<<std::hex<<buffer[pos-1]<<" using mask 0x"<<mask<<" = 0x"<<data<<std::dec<<std::endl;
+					for(int n = 4-byte, mask = 0x00; n > 0; --n) {
+						mask = mask<<8;
+						mask |= 0xff;
+					}
+					data |= (buffer[pos]&mask)<<(8*byte);
+					if(debug) std::cout<<pos<<": plus "<<byte<<" bytes from 0x"<<std::hex<<buffer[pos]<<" using mask 0x"<<mask<<" = 0x"<<data<<std::dec<<std::endl;
+					break;
+				case 6:
+				case 7:
+					// read eight bytes
+					// use the 4-n bytes from this word, the whole next word, and n bytes from the next-to-next word (also works for n = 0!)
+					for(int n = 4-byte, mask = 0x00; n > 0; --n) {
+						mask = mask<<8;
+						mask |= 0xff;
+					}
+					data = (buffer[pos++]>>(8*byte))&mask;
+					if(debug) std::cout<<pos-1<<": "<<4-byte<<" bytes from 0x"<<std::hex<<buffer[pos-1]<<" using mask 0x"<<mask<<" = 0x"<<data<<std::dec<<std::endl;
+					data |= static_cast<uint64_t>(buffer[pos++])<<(8*byte);
+					if(debug) std::cout<<pos-1<<": plus 0x"<<std::hex<<buffer[pos-1]<<" = 0x"<<data<<std::dec<<std::endl;
+					for(int n = 4-byte, mask = 0x00; n > 0; --n) {
+						mask = mask<<8;
+						mask |= 0xff;
+					}
+					data |= static_cast<uint64_t>(buffer[pos]&mask)<<(8*byte+32);
+					if(debug) std::cout<<pos<<": plus "<<byte<<" bytes from 0x"<<std::hex<<buffer[pos]<<" using mask 0x"<<mask<<" = 0x"<<data<<std::dec<<std::endl;
+					break;
+				case 8:
+					std::cout<<"no idea how to handle strings!"<<std::endl;
+					break;
+				case 9:
+					std::cout<<"no idea how to handle longs!"<<std::endl;
+					break;
+				case 10:
+					std::cout<<"no idea how to handle doubles!"<<std::endl;
+					break;
+				case 11:
+					std::cout<<"no idea how to handle chars!"<<std::endl;
+					break;
+				default:
+					break;
+			};
+			if(byte > 3) {
+				byte = byte%4;
 				++pos;
-			} else {
-				dualTraceEnabled = false;
-				waveformEnabled =  false;
-				energyEnabled =    false;
-				timeEnabled =      false;
-				analogProbe1 =     0;
-				analogProbe2 =     0;
-				digitalProbe =     0;
-				numSamples =       0;
 			}
-			while(pos < aggregateSize) {
-				// time word - 31 = timestamp roll over, [29:0] = timestamp
-				if(debug) std::cout<<pos<<": timestamp - 0x"<<std::hex<<buffer[pos]<<std::dec<<std::endl;
-				if(((buffer[pos]>>31)&0x1) == 0x1) { ++timestampRollover; }
-				timestamp = static_cast<uint64_t>(buffer[pos++]&0x3fffffff) + (static_cast<uint64_t>(timestampRollover)<<30);
-				// waveform words - 31 = trigger sample, 30 = digital probe, [29:16] = analog probe, 15 = trigger sample, 14 = digital probe, [13:0] = analog probe
-				waveform.clear();
-				for(int w = 0; w < numSamples; ++w) {
-					if(debug) std::cout<<pos<<": waveform - 0x"<<std::hex<<buffer[pos]<<std::dec<<std::endl;
-					waveform.push_back(buffer[pos]&0xffff);
-					waveform.push_back((buffer[pos++]>>16)&0xffff);
-				}
-				// energy word - [23:16] = extras, 15 - pile up, [14:0] = energy
-				// extras - 7 = double satutration, 6 = total triggers, 5 = lost triggers, 4 = input saturation, 3 = fake event, 2 = timestamp reset, 1 = timestamp rollover, 0 = dead time
-				if(debug) std::cout<<pos<<": energy - 0x"<<std::hex<<buffer[pos]<<std::dec<<std::endl;
-				extras = (buffer[pos]>>16)&0xff;
-				pileUp = (((buffer[pos]>>15)&0x1) == 0x1);
-				energy = buffer[pos++]&0x7fff;
-				tree->Fill();
-				++entry;
-				if(entry%1000 == 0) std::cout<<(100*pos)/buffer.size()<<"% done, "<<pos<<"/"<<buffer.size()<<" words read\r"<<std::flush;
-			}
-		} // end of channel loop
-		if(debug && pos > 1000) break;
-	} // end of data loop
+			switch(dataType[i]) {
+				case 0:
+					timestamp = data;
+					break;
+				case 1:
+					energy = data;
+					break;
+				case 2:
+					extras = data;
+					break;
+				default:
+					break;
+			};
+		} // end of data loop
+		tree->Fill();
+		++entry;
+		if(entry%1000 == 0) {
+			std::cout<<(100*pos)/buffer.size()<<"% done, "<<pos<<"/"<<buffer.size()<<" words read\r"<<std::flush;
+		}
+	} // end of event loop
 
 	std::cout<<"100% done, "<<pos<<"/"<<buffer.size()<<" words read = "<<entry<<" entries"<<std::endl;
 
