@@ -45,6 +45,11 @@ int main(int argc, char** argv)
 	// open input file
 	std::ifstream input(argv[1], std::ios::binary);
 
+	if(!input.is_open()) {
+		std::cerr<<"Failed to open '"<<argv[1]<<"'!"<<std::endl;
+		return 1;
+	}
+
 	// get size of input file
 	input.seekg(0, input.end);
 	size_t fileSize = input.tellg();
