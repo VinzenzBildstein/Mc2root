@@ -31,19 +31,16 @@ int main(int argc, char** argv)
 
 	// create and add leafs
 	uint8_t protocolVersion;
-	tree->Branch("protocolVersion", &protocolVersion);
+	//tree->Branch("protocolVersion", &protocolVersion);
 	uint8_t numHeaderWords;
-	tree->Branch("numHeaderWords", &numHeaderWords);
+	//tree->Branch("numHeaderWords", &numHeaderWords);
 	std::vector<uint8_t> dataType;
-	tree->Branch("dataType", &dataType);
+	//tree->Branch("dataType", &dataType);
 	std::vector<uint32_t> dataFormat;
-	tree->Branch("dataFormat", &dataFormat);
+	//tree->Branch("dataFormat", &dataFormat);
 	ULong64_t timestamp;
-	tree->Branch("timestamp", &timestamp);
 	ULong64_t extras;
-	tree->Branch("extras", &extras);
 	ULong64_t energy;
-	tree->Branch("energy", &energy);
 
 	// open input file
 	std::ifstream input(argv[1], std::ios::binary);
@@ -54,98 +51,83 @@ int main(int argc, char** argv)
 	input.seekg(0, input.beg);
 
 	// create buffer and read file into it (might want to check how much memory we create here?)
-	std::vector<uint32_t> buffer(fileSize/sizeof(uint32_t));
+	std::vector<uint8_t> buffer(fileSize);
 	input.read(reinterpret_cast<char*>(buffer.data()), fileSize);
 
 	// loop over buffer
-	size_t pos;
+	size_t pos = 0;
 	size_t entry = 0;
 	uint64_t data = 0;
-	uint32_t mask = 0;
-	int byte = 0;
-	for(pos = 0; pos < buffer.size();) {
-		// header
-		if(debug) std::cout<<pos<<": header - 0x"<<std::hex<<buffer[pos]<<std::dec<<std::endl;
-		protocolVersion = buffer[pos]&0xff;
-		numHeaderWords = (buffer[pos]>>8)&0xff; // no increment needed here!
-		if(debug) std::cout<<"=> protocol "<<static_cast<int>(protocolVersion)<<" - "<<static_cast<int>(numHeaderWords)<<" words in header"<<std::endl;
-		if(numHeaderWords == 0) {
-			std::cout<<"something went wrong, I got zero header words?"<<std::endl;
-			++pos;
-			continue;
-		}
-		// read remaining header words with data type and format
-		dataType.clear();
-		dataFormat.clear();
-		for(int h = 1; h < numHeaderWords; ++h) {
-			if(debug) std::cout<<pos+h<<": header word "<<h<<" - 0x"<<std::hex<<buffer[pos+h]<<std::dec<<std::endl;
-			dataType.push_back(buffer[pos+h]&0xff);
-			dataFormat.push_back((buffer[pos+h]>>8)&0xffffff);
-		}
-		// advance pos past the header
-		pos += numHeaderWords;
+	// header
+	if(debug) std::cout<<pos<<": protocol version - 0x"<<std::hex<<(static_cast<uint64_t>(buffer[pos])&0xff)<<std::dec<<std::endl;
+	protocolVersion = buffer[pos++];
+	if(debug) std::cout<<pos<<": number of header words - 0x"<<std::hex<<(static_cast<uint64_t>(buffer[pos])&0xff)<<std::dec<<std::endl;
+	numHeaderWords = buffer[pos++];
+	if(debug) std::cout<<"skipping two reserved bytes "<<(static_cast<uint64_t>(buffer[pos])&0xff)<<" - "<<(static_cast<uint64_t>(buffer[pos+1])&0xff)<<std::endl;
+	pos += 2;
+	if(numHeaderWords == 0) {
+		std::cout<<"something went wrong, I got zero header words?"<<std::endl;
+		return 1;
+	}
+	// read remaining header words with data type and format
+	dataType.clear();
+	dataFormat.clear();
+	for(int h = 1; h < numHeaderWords; ++h) {
+		if(debug) std::cout<<pos<<": data type - 0x"<<std::hex<<static_cast<uint64_t>(buffer[pos])<<std::dec<<std::endl;
+		dataType.push_back(buffer[pos++]);
+		dataFormat.push_back((static_cast<uint64_t>(buffer[pos+2])<<16)|(static_cast<uint64_t>(buffer[pos+1])<<8)|(buffer[pos]));
+		if(debug) std::cout<<pos<<": data format - 0x"<<std::hex<<static_cast<uint64_t>(buffer[pos])<<" + 0x"<<(static_cast<uint64_t>(buffer[pos+1])<<8)<<" + 0x"<<(static_cast<uint64_t>(buffer[pos+2])<<16)<<" = 0x"<<dataFormat.back()<<std::dec<<std::endl;
+		pos += 3;
+		switch(dataType.back()) {
+				case 0:
+					tree->Branch("timestamp", &timestamp);
+					break;
+				case 1:
+					tree->Branch("energy", &energy);
+					break;
+				case 2:
+					tree->Branch("extras", &extras);
+					break;
+				case 4:
+					if((dataFormat.back()&0xff) != 0x80) {
+						std::cerr<<"Unknown DPP code format "<<std::hex<<dataFormat.back()<<std::dec<<", was expecting 0x80!"<<std::endl;
+						return 1;
+					}
+				default:
+					break;
+		};
+	}
+	while(pos < buffer.size()) {
 		// loop over all data types and formats and read them
 		for(size_t i = 0; i < dataType.size(); ++i) {
 			switch(dataFormat[i]) {
 				case 0:
 				case 1:
 					// read single byte
-					data = (buffer[pos]>>(8*byte))&0xff;
-					if(debug) std::cout<<pos<<": single byte "<<byte<<" from 0x"<<std::hex<<buffer[pos]<<" = 0x"<<data<<std::dec<<std::endl;
-					byte += 1;
+					data = buffer[pos];
+					if(debug) std::cout<<pos<<": single byte from 0x"<<std::hex<<static_cast<uint64_t>(buffer[pos])<<" = 0x"<<data<<std::dec<<std::endl;
+					pos += 1;
 					break;
 				case 2:
 				case 3:
 					// read two bytes
-					if(byte < 3) {
-						// can read both bytes from this word
-						data = (buffer[pos]>>(8*byte))&0xffff;
-						if(debug) std::cout<<pos<<": two bytes "<<byte<<" from 0x"<<std::hex<<buffer[pos]<<" = 0x"<<data<<std::dec<<std::endl;
-						byte += 2;
-					} else {
-						// read one byte from this word
-						data = (buffer[pos++]>>(8*byte))&0xff;
-						// go to next word and read one more byte
-						data |= (buffer[pos]<<8)&0xff00;
-						if(debug) std::cout<<pos<<": two bytes "<<byte<<" from 0x"<<std::hex<<buffer[pos-1]<<" and 0x"<<buffer[pos]<<" = 0x"<<data<<std::dec<<std::endl;
-						byte = 1;
-					}
+					data = (static_cast<uint64_t>(buffer[pos+1])<<8)|(buffer[pos]);
+					if(debug) std::cout<<pos<<": two bytes from 0x"<<std::hex<<static_cast<uint64_t>(buffer[pos])<<" + 0x"<<(static_cast<uint64_t>(buffer[pos+1])<<8)<<" = 0x"<<data<<std::dec<<std::endl;
+					pos += 2;
 					break;
 				case 4:
 				case 5:
 					// read four bytes
-					// use the 4-n bytes from this word and n bytes from the next word (also works for n = 0!)
-					for(int n = 4-byte, mask = 0x00; n > 0; --n) {
-						mask = mask<<8;
-						mask |= 0xff;
-					}
-					data = (buffer[pos++]>>(8*byte))&mask;
-					if(debug) std::cout<<pos-1<<": "<<4-byte<<" bytes from 0x"<<std::hex<<buffer[pos-1]<<" using mask 0x"<<mask<<" = 0x"<<data<<std::dec<<std::endl;
-					for(int n = 4-byte, mask = 0x00; n > 0; --n) {
-						mask = mask<<8;
-						mask |= 0xff;
-					}
-					data |= (buffer[pos]&mask)<<(8*byte);
-					if(debug) std::cout<<pos<<": plus "<<byte<<" bytes from 0x"<<std::hex<<buffer[pos]<<" using mask 0x"<<mask<<" = 0x"<<data<<std::dec<<std::endl;
+					data = (static_cast<uint64_t>(buffer[pos+3])<<24)|(static_cast<uint64_t>(buffer[pos+2])<<16)|(static_cast<uint64_t>(buffer[pos+1])<<8)|(buffer[pos]);
+					if(debug) std::cout<<pos<<": four bytes from 0x"<<std::hex<<static_cast<uint64_t>(buffer[pos])<<" + 0x"<<(static_cast<uint64_t>(buffer[pos+1])<<8)<<" + 0x"<<(static_cast<uint64_t>(buffer[pos+2])<<16)<<" + 0x"<<(static_cast<uint64_t>(buffer[pos+3])<<24)<<" = 0x"<<data<<std::dec<<std::endl;
+					pos += 4;
 					break;
 				case 6:
 				case 7:
 					// read eight bytes
-					// use the 4-n bytes from this word, the whole next word, and n bytes from the next-to-next word (also works for n = 0!)
-					for(int n = 4-byte, mask = 0x00; n > 0; --n) {
-						mask = mask<<8;
-						mask |= 0xff;
-					}
-					data = (buffer[pos++]>>(8*byte))&mask;
-					if(debug) std::cout<<pos-1<<": "<<4-byte<<" bytes from 0x"<<std::hex<<buffer[pos-1]<<" using mask 0x"<<mask<<" = 0x"<<data<<std::dec<<std::endl;
-					data |= static_cast<uint64_t>(buffer[pos++])<<(8*byte);
-					if(debug) std::cout<<pos-1<<": plus 0x"<<std::hex<<buffer[pos-1]<<" = 0x"<<data<<std::dec<<std::endl;
-					for(int n = 4-byte, mask = 0x00; n > 0; --n) {
-						mask = mask<<8;
-						mask |= 0xff;
-					}
-					data |= static_cast<uint64_t>(buffer[pos]&mask)<<(8*byte+32);
-					if(debug) std::cout<<pos<<": plus "<<byte<<" bytes from 0x"<<std::hex<<buffer[pos]<<" using mask 0x"<<mask<<" = 0x"<<data<<std::dec<<std::endl;
+					data = (static_cast<uint64_t>(buffer[pos+7])<<56)|(static_cast<uint64_t>(buffer[pos+6])<<48)|(static_cast<uint64_t>(buffer[pos+5])<<40)|(static_cast<uint64_t>(buffer[pos+4])<<32)|(static_cast<uint64_t>(buffer[pos+3])<<24)|(static_cast<uint64_t>(buffer[pos+2])<<16)|(static_cast<uint64_t>(buffer[pos+1])<<8)|(buffer[pos]);
+					if(debug) std::cout<<pos<<": eight bytes from 0x"<<std::hex<<static_cast<uint64_t>(buffer[pos])<<" + 0x"<<(static_cast<uint64_t>(buffer[pos+1])<<8)<<" + 0x"<<(static_cast<uint64_t>(buffer[pos+2])<<16)<<" + 0x"<<(static_cast<uint64_t>(buffer[pos+3])<<24)<<" + 0x"<<(static_cast<uint64_t>(buffer[pos+4])<<32)<<" + 0x"<<(static_cast<uint64_t>(buffer[pos+5])<<40)<<" + 0x"<<(static_cast<uint64_t>(buffer[pos+6])<<48)<<" + 0x"<<(static_cast<uint64_t>(buffer[pos+7])<<56)<<" = 0x"<<data<<std::dec<<std::endl;
+					pos += 8;
 					break;
 				case 8:
 					std::cout<<"no idea how to handle strings!"<<std::endl;
@@ -162,10 +144,6 @@ int main(int argc, char** argv)
 				default:
 					break;
 			};
-			if(byte > 3) {
-				byte = byte%4;
-				++pos;
-			}
 			switch(dataType[i]) {
 				case 0:
 					timestamp = data;
@@ -185,7 +163,7 @@ int main(int argc, char** argv)
 		if(entry%1000 == 0) {
 			std::cout<<(100*pos)/buffer.size()<<"% done, "<<pos<<"/"<<buffer.size()<<" words read\r"<<std::flush;
 		}
-	} // end of event loop
+	} // end of buffer loop
 
 	std::cout<<"100% done, "<<pos<<"/"<<buffer.size()<<" words read = "<<entry<<" entries"<<std::endl;
 
