@@ -49,6 +49,7 @@ int main(int argc, char** argv)
 		std::cerr<<"Failed to open '"<<argv[1]<<"'!"<<std::endl;
 		return 1;
 	}
+	std::cout<<"Opened '"<<argv[1]<<"'!"<<std::endl;
 
 	// get size of input file
 	input.seekg(0, input.end);
